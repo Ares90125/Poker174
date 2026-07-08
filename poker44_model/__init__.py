@@ -1,15 +1,11 @@
-"""Participant-owned model package for the Poker44 miner — poker-c2-ensemble.
+"""Participant-owned model package for the Poker44 miner (uid7) — v5 sani fix.
 
-C2 variant: WIDENED soft-vote bag. Bot detector = ExtraTrees +
-HistGradientBoosting + RandomForest + second-seed ExtraTrees soft-vote over the
-EXACT C2 (v5 sani) behavioral feature set (v3 features minus the fragile
-identity / raw-magnitude aggregates). The added RandomForest and second-seed
-ExtraTrees are pure variance reduction over the C2 vote — snapshot-agnostic, no
-capture-fitted domain adaptation. Trained on benchmark hands passed through the
-validator's prepare_hand_for_miner (train==serve), same sanitizer as C2; scored
-by within-batch ranking. Inference does NOT re-sanitize (live hands arrive
-already sanitized validator-side). features.py / detector.py are byte-identical
-to C2; only model.joblib differs (a distinct fitted artifact). See detector.py
+Bot detector = ExtraTrees + HistGradientBoosting soft-vote ensemble over the v3
+behavioral feature set with fragile identity / raw-magnitude aggregates removed
+(candidate C2). Trained on benchmark hands passed through the validator's
+prepare_hand_for_miner so the training distribution matches the sanitized live
+feed (train==serve); scored by within-batch ranking. Inference does NOT
+re-sanitize (live hands are already sanitized validator-side). See detector.py
 (inference), features.py (extraction + FEATURE_NAMES), train_model.py (training),
 model.joblib (trained model).
 """

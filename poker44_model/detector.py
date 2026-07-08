@@ -1,29 +1,37 @@
-"""Poker44 bot detector — uid7 (Ares90125/poker7), v5 "sanitization fix".
+"""Poker44 bot detector — MLP-bag over C2's 180 sanitization-invariant features.
 
-Model: **ExtraTrees + HistGradientBoosting soft-vote ensemble** over the v3
-behavioral feature set with the fragile identity / raw-magnitude aggregates
-REMOVED (candidate C2 — see features.py FEATURE_NAMES). Those columns went
-out-of-distribution on the validator-sanitized live feed and collapsed the raw
-predict_proba spread (v3 live raw-std ~0.003, v4 ~0.012); dropping them plus
-training on hands passed through the validator's prepare_hand_for_miner
-(train==serve) restores a healthy live raw-std. Output = **within-batch rank**,
-which matches the validator's ranking-based reward.
+TREE-COLLAPSE FIX. The v5_sani C2 model (ExtraTrees + HistGradientBoosting
+soft-vote) collapses to a near-flat predict_proba on the validator-sanitized live
+feed: those tree ensembles do not extrapolate off the benchmark support, so live
+batches (a shifted, deeper, call-heavier population) get squashed to nearly one
+value -> random within-batch ranking -> median live reward.
+
+This model replaces the tree ensemble with a **bag of standardized Torch MLPs**
+over the SAME 180 features (mlp_bag.BagMLP / mlp_member.TorchMLPClassifier). Inputs
+are standardized on the train mean/std (critical for OOD extrapolation), each
+member early-stops on validation LOSS (not AP) so it learns a spread-preserving
+surface, and 5 seed members are averaged. Offline double-gate vs C2:
+  Gate A (benchmark GroupKFold reward, true labels): 0.839 mean vs C2 0.836 (3 seeds)
+  Gate B (live dup-proxy Spearman): +0.35 mean vs C2 +0.043 (11-12/12 batches positive)
+Gate A is preserved (not the DA mirage, which had a flat Gate A) and Gate B lifts
+sharply -> the live ordering is genuinely more discriminative.
 
 IMPORTANT — inference does NOT sanitize. Live chunks arrive already sanitized by
-the validator (prepare_hand_for_miner runs validator-side, per hand). Only
-TRAINING sanitizes raw benchmark hands (see train_model.py). Sanitizing again
-here would double-transform already-sanitized hands and re-introduce skew, so
-this path featurizes the incoming chunks directly.
-
-The trained model is the committed `model.joblib` (v5_sani candidate C2).
-sklearn loads it at inference. `score_batch(chunks)` returns one rank-based
-bot-risk score in [0,1] per chunk.
+the validator (prepare_hand_for_miner runs validator-side, per hand). Only TRAINING
+sanitizes raw benchmark hands. Output = within-batch rank (matches the ranking reward).
 """
 from __future__ import annotations
 
 import os
 
 import numpy as np
+
+try:  # bound CPU threads so batched predict stays fast
+    import torch
+    torch.set_num_threads(int(os.environ.get("POKER44_TORCH_THREADS", "4")))
+except Exception:
+    pass
+
 import joblib
 
 from poker44_model.features import chunk_features, FEATURE_NAMES
