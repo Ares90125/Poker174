@@ -38,8 +38,6 @@ class Miner(BaseMinerNeuron):
             repo_root / "poker44_model" / "__init__.py",
             repo_root / "poker44_model" / "detector.py",
             repo_root / "poker44_model" / "features.py",
-            repo_root / "poker44_model" / "mlp_bag.py",
-            repo_root / "poker44_model" / "mlp_member.py",
             repo_root / "poker44_model" / "model.joblib",
             repo_root / "poker44_model" / "capture.py",
         ]
