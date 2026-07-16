@@ -49,12 +49,12 @@ class Miner(BaseMinerNeuron):
             repo_root=repo_root,
             implementation_files=implementation_files,
             defaults={
-                "model_name": "poker174-mlp",
+                "model_name": "poker174-vote",
                 "model_version": "4",
                 "framework": "pytorch-mlp-ensemble",
                 "license": "MIT",
                 "repo_url": "",
-                "notes": "Gradient-boosted-trees bot detector over behavioral features (poker44_model/).",
+                "notes": "Soft-voting ExtraTrees+RandomForest+HistGradientBoosting ensemble over 180 sanitization-invariant behavioral features (poker44_model/); strictly-monotone reward-fit decision layer, deterministic top-10% crossing, no isotonic calibration.",
                 "open_source": True,
                 "inference_mode": "remote",
                 "training_data_statement": (
