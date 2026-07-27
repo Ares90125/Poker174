@@ -1,15 +1,18 @@
-"""Poker44 bot detector -- INPUT-RANK VOTE over the 452-dim UNION-ORDERSTAT row.
+"""Poker44 bot detector -- INPUT-RANK 5-MEMBER VOTE over the 452-dim UNION-ORDERSTAT row.
 
-Two proven levers stacked:
+Member-diversity A/B vs the deployed 3-member input-rank union (irunion). Same two
+proven levers, unchanged:
   (1) the transfer-stable UNION order-statistic feature surface (features_v2
       order-stats + base_features chunk_features, magnitude cols dropped), and
   (2) the leyr/stack233 INPUT-side rank transform -- every feature mapped to its
-      WITHIN-SERVED-WINDOW percentile rank BEFORE the trees.
-Together they beat the C2-180 input-rank baseline on BOTH the OOS labeled AP and
-the live duplication bot-tell (see INPUTRANK_MAX/RESULT.md). Learner = deployed
-VOTE recipe (ET/RF/HGB soft-vote .45/.25/.30); decision = strictly-monotone NOISO
-(FLOOR lifts exactly ceil(FLOOR*n) chunks over 0.5 -> hard-zero-safe). Inference
-does NOT sanitize (validator sanitizes live chunks). All estimators single-thread.
+      WITHIN-SERVED-WINDOW percentile rank BEFORE the learners (train==serve).
+Learner = 5-member soft-vote ET/RF/HGB/LGBM/XGB (adds LGBM+XGB to the deployed
+ET/RF/HGB trio; hypothesis: more decorrelated members -> lower round-to-round
+variance on live v2). Decision = strictly-monotone NOISO (FLOOR lifts exactly
+ceil(FLOOR*n) chunks over 0.5 -> hard-zero-safe). Inference does NOT sanitize
+(the validator sanitizes live chunks). ALL FIVE estimators are pinned single-thread
+(LGBM/XGB oversubscribe/deadlock otherwise): set_params n_jobs=1 on load AND the
+predict pass runs inside threadpool_limits(1) (pins OpenMP for LGBM+XGB).
 """
 from __future__ import annotations
 import os
@@ -33,10 +36,11 @@ except Exception:
 _MODEL = None
 _T_HI = 4e-4
 _T_LO = -4e-4
+_MEMBERS = ("et", "rf", "hgb", "lgb", "xgb")
 
 
 def _pin_single_thread(est):
-    for attr in ("n_jobs", "nthread", "thread_count"):
+    for attr in ("n_jobs", "nthread", "thread_count", "n_thread"):
         try:
             est.set_params(**{attr: 1})
         except Exception:
@@ -53,7 +57,7 @@ def _model():
     global _MODEL
     if _MODEL is None:
         b = joblib.load(os.path.join(os.path.dirname(__file__), "model.joblib"))
-        for key in ("et", "rf", "hgb"):
+        for key in _MEMBERS:
             if key in b:
                 try:
                     _pin_single_thread(b[key])
@@ -89,19 +93,18 @@ def _rows(chunks):
 
 def _vote_prob(model, Xr):
     w = model["vote_weights"]
-    return (w[0] * model["et"].predict_proba(Xr)[:, 1]
-            + w[1] * model["rf"].predict_proba(Xr)[:, 1]
-            + w[2] * model["hgb"].predict_proba(Xr)[:, 1]) / sum(w)
+    ps = [model[k].predict_proba(Xr)[:, 1] for k in _MEMBERS]
+    return sum(wi * p for wi, p in zip(w, ps)) / sum(w)
 
 
 def _bag_fused(model, chunks):
     X = _rows(chunks)
-    Xr = _rank01_cols(X)
+    Xr = _rank01_cols(X)          # INPUT-side within-window rank (train==serve)
     def _run():
         return _rank01(_vote_prob(model, Xr))
     if threadpool_limits is None:
         return _run()
-    with threadpool_limits(limits=1):
+    with threadpool_limits(limits=1):   # pins OpenMP for LGBM + XGB
         return _run()
 
 
