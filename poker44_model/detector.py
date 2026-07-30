@@ -1,18 +1,27 @@
-"""Poker44 bot detector -- INPUT-RANK 5-MEMBER VOTE over the 452-dim UNION-ORDERSTAT row.
+"""Poker44 bot detector -- STACK6 (LGBM+XGB+CatBoost+ET+RF+HGB -> LR meta) over
+the INPUT-RANK VOTE-family's 452-dim UNION-ORDERSTAT row.
 
-Member-diversity A/B vs the deployed 3-member input-rank union (irunion). Same two
-proven levers, unchanged:
+Ports the #1 live miner's (TakashiAkio poker44_ckmon_1) 6-model heterogeneous
+stacked-ensemble CONSTRUCTION -- LightGBM + XGBoost + CatBoost + ExtraTrees +
+RandomForest + HistGradientBoosting, each an independent base learner, combined
+by a trained LogisticRegression meta-head over out-of-fold base probabilities
+(honest stacking, GroupKFold-by-date) -- onto OUR transfer-stable feature
+surface and decision layer instead of theirs. See
+train/dev/families/WHYLOW_0729/RESULT.md for the reward-math case for why
+"more decorrelated ensembling" is the one grounded lever, and
+train/dev/families/STACK6_0730/RESULT.md for the full port + verification.
+
+Two proven levers stacked on the FEATURE side (unchanged from INPUTRANK_MAX):
   (1) the transfer-stable UNION order-statistic feature surface (features_v2
       order-stats + base_features chunk_features, magnitude cols dropped), and
-  (2) the leyr/stack233 INPUT-side rank transform -- every feature mapped to its
-      WITHIN-SERVED-WINDOW percentile rank BEFORE the learners (train==serve).
-Learner = 5-member soft-vote ET/RF/HGB/LGBM/XGB (adds LGBM+XGB to the deployed
-ET/RF/HGB trio; hypothesis: more decorrelated members -> lower round-to-round
-variance on live v2). Decision = strictly-monotone NOISO (FLOOR lifts exactly
-ceil(FLOOR*n) chunks over 0.5 -> hard-zero-safe). Inference does NOT sanitize
-(the validator sanitizes live chunks). ALL FIVE estimators are pinned single-thread
-(LGBM/XGB oversubscribe/deadlock otherwise): set_params n_jobs=1 on load AND the
-predict pass runs inside threadpool_limits(1) (pins OpenMP for LGBM+XGB).
+  (2) the leyr/stack233 INPUT-side rank transform -- every feature mapped to
+      its WITHIN-SERVED-WINDOW percentile rank BEFORE the learners.
+
+Decision layer = strictly-monotone NOISO (FLOOR lifts exactly ceil(FLOOR*n)
+chunks over 0.5 -> hard-zero-safe), UNCHANGED from INPUTRANK_MAX/detector.py --
+only the thing being fed into it changed (vote of 3 -> stacked meta of 6).
+Inference does NOT sanitize (validator sanitizes live chunks). All 6 base
+learners are pinned to a single thread at load and at every predict call.
 """
 from __future__ import annotations
 import os
@@ -36,14 +45,16 @@ except Exception:
 _MODEL = None
 _T_HI = 4e-4
 _T_LO = -4e-4
-_MEMBERS = ("et", "rf", "hgb", "lgb", "xgb")
+_MODEL_ORDER = ("lgbm", "xgb", "cat", "et", "rf", "hgb")
 
 
 def _pin_single_thread(est):
-    for attr in ("n_jobs", "nthread", "thread_count", "n_thread"):
+    for attr in ("n_jobs", "nthread", "thread_count"):
         try:
             est.set_params(**{attr: 1})
         except Exception:
+            # CatBoost refuses set_params on a fitted model -- its thread
+            # count is pinned per-call instead, see _base_proba below.
             pass
     for holder in ("estimators_", "estimators"):
         try:
@@ -57,7 +68,7 @@ def _model():
     global _MODEL
     if _MODEL is None:
         b = joblib.load(os.path.join(os.path.dirname(__file__), "model.joblib"))
-        for key in _MEMBERS:
+        for key in _MODEL_ORDER:
             if key in b:
                 try:
                     _pin_single_thread(b[key])
@@ -91,20 +102,41 @@ def _rows(chunks):
     return np.nan_to_num(np.array(rows, dtype=float))
 
 
-def _vote_prob(model, Xr):
-    w = model["vote_weights"]
-    ps = [model[k].predict_proba(Xr)[:, 1] for k in _MEMBERS]
-    return sum(wi * p for wi, p in zip(w, ps)) / sum(w)
+def _base_proba(model, name, Xr):
+    """One base learner's P(bot) column, single-thread pinned at call time.
+
+    LightGBM/XGBoost/ExtraTrees/RandomForest respect the n_jobs=1 baked into
+    the fitted estimator (set in _pin_single_thread). CatBoost rejects
+    set_params on a fitted model, so its thread count is pinned via the
+    `thread_count` kwarg accepted directly by predict_proba (verified
+    numerically identical to the unpinned prediction -- pinning threads does
+    not change the output, only the degree of parallelism).
+    HistGradientBoostingClassifier has no n_jobs knob at all; its OpenMP
+    threads are bounded by the threadpool_limits(limits=1) context the caller
+    wraps every predict call in.
+    """
+    m = model[name]
+    if name == "cat":
+        return np.asarray(m.predict_proba(Xr, thread_count=1))[:, 1]
+    return np.asarray(m.predict_proba(Xr))[:, 1]
+
+
+def _stack_prob(model, Xr):
+    cols = [_base_proba(model, name, Xr) for name in _MODEL_ORDER]
+    Z = np.stack(cols, axis=1)
+    return np.asarray(model["meta"].predict_proba(Z))[:, 1]
 
 
 def _bag_fused(model, chunks):
     X = _rows(chunks)
-    Xr = _rank01_cols(X)          # INPUT-side within-window rank (train==serve)
+    Xr = _rank01_cols(X)
+
     def _run():
-        return _rank01(_vote_prob(model, Xr))
+        return _rank01(_stack_prob(model, Xr))
+
     if threadpool_limits is None:
         return _run()
-    with threadpool_limits(limits=1):   # pins OpenMP for LGBM + XGB
+    with threadpool_limits(limits=1):
         return _run()
 
 
